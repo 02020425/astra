@@ -53,16 +53,20 @@ def load_daily_news(
 
     print(f"[NewsLoader] 读取到 {len(articles)} 条新闻")
 
-    # 2. 构建文本（标题 + 内容），去重
+    # 2. 构建文本（标题 + 内容），按 URL 去重
     texts = []
     ids = []
     metadatas = []
+    seen = set()
 
     for a in articles:
         url = a.get("url", "")
         if not url:
             continue
         doc_id = make_id(url)
+        if doc_id in seen:
+            continue
+        seen.add(doc_id)
 
         # 用 标题 + 内容 作为嵌入文本
         text = f"{a.get('title', '')}\n{a.get('content', '')}"

@@ -140,11 +140,11 @@ def run(date_str: str, crawl_only: bool = False):
     # 提取结果
     errors = result.get("errors", [])
     if errors:
-        print(f"  ⚠ 部分 Agent 失败: {errors}")
+        print(f"  WARN 部分 Agent 失败: {errors}")
 
     final_dict = result.get("final_report")
     if final_dict is None:
-        print("  ❌ 主编汇总失败，退出。")
+        print("  ERROR 主编汇总失败，退出。")
         return
 
     final_report = FinalReport.model_validate(final_dict)
@@ -174,7 +174,7 @@ def run(date_str: str, crawl_only: bool = False):
     )
 
     print("\n" + "=" * 60)
-    print(f"  ✅ 完成！报告: data/reports/daily_report_{date_str}.md")
+    print(f"  完成！报告: data/reports/daily_report_{date_str}.md")
     print("=" * 60)
 
 

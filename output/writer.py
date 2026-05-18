@@ -13,7 +13,7 @@ from datetime import datetime
 from agents.schemas import FinalReport
 
 
-def write_outputs(report: FinalReport, output_dir: Path, date_str: str):
+def write_outputs(report: FinalReport, output_dir: Path, date_str: str, eval_data: dict | None = None):
     """写入 JSON + Markdown 双格式"""
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -28,12 +28,12 @@ def write_outputs(report: FinalReport, output_dir: Path, date_str: str):
 
     # --- Markdown ---
     md_path = output_dir / f"daily_report_{date_str}.md"
-    md_content = render_markdown(report)
+    md_content = render_markdown(report, eval_data)
     md_path.write_text(md_content, encoding="utf-8")
     print(f"[Writer] Markdown → {md_path}")
 
 
-def render_markdown(report: FinalReport) -> str:
+def render_markdown(report: FinalReport, eval_data: dict | None = None) -> str:
     """把 FinalReport 渲染为可读的 Markdown 格式"""
 
     lines = [
@@ -70,5 +70,16 @@ def render_markdown(report: FinalReport) -> str:
         lines.append("")
 
     lines.append("---")
+    if eval_data:
+        lines.append("")
+        lines.append("## 质量评估")
+        lines.append("")
+        lines.append(f"| 指标 | 得分 |")
+        lines.append(f"|------|------|")
+        lines.append(f"| 检索精度 | {eval_data.get('retrieval_precision', 0):.0%} |")
+        lines.append(f"| Agent 一致性 | {eval_data.get('cross_agent_consistency', 0):.0%} |")
+        lines.append(f"| 报告质量 | {'通过' if eval_data.get('report_quality', {}).get('pass') else '未通过'} |")
+        lines.append(f"| **综合评分** | **{eval_data.get('overall_score', 0):.0%}** |")
+        lines.append("")
     lines.append(f"*报告由 ASTRA 多智能体系统自动生成*")
     return "\n".join(lines)

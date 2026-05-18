@@ -58,7 +58,7 @@ AGENT_DISPLAY = {
 # ================================================================
 # 核心问答逻辑
 # ================================================================
-def answer_question(question: str, history: list) -> str:
+def answer_question(question: str, history: list) -> tuple:
     """
     处理用户提问：
     1. RAG 检索相关新闻
@@ -66,22 +66,40 @@ def answer_question(question: str, history: list) -> str:
     3. 主编综合
     4. 返回格式化的 Markdown 答案
     """
+    history = history or []
     if not question or not question.strip():
-        return "请输入你的问题。"
+        history.append({"role": "user", "content": question or ""})
+        history.append({"role": "assistant", "content": "请输入你的问题。"})
+        return history, ""
 
     # Step 1: RAG 检索
     rag_context = retriever.retrieve_by_question(question)
 
-    # Step 2: 构建一个简化的 market_data（问答模式不需要完整行情数据）
-    #         用 RAG 检索到的新闻作为上下文
-    market_data = {
-        "spot_summary": {"note": "交互问答模式，使用 RAG 检索上下文"},
-        "pe": {"note": "交互问答模式"},
-        "sector_stats": [],
-        "concentration": {},
-        "index_stats": {},
-        "top_amount": [],
-    }
+    # Step 2: 加载今日真实行情数据（如果有 processed 数据就用，否则用空）
+    try:
+        from main import _load_processed
+        market_data = _load_processed(settings.data_processed)
+        pe_df = market_data.get("pe_raw")
+        if pe_df is not None and len(pe_df) > 0:
+            current_pe = float(pe_df["avg_pe_val"].iloc[-1])
+            pctl = (pe_df["avg_pe_val"] < current_pe).mean() * 100
+            market_data["pe"] = {
+                "current": current_pe,
+                "max": float(pe_df["avg_pe_val"].max()),
+                "min": float(pe_df["avg_pe_val"].min()),
+                "mean": float(pe_df["avg_pe_val"].mean()),
+                "percentile": round(pctl, 1),
+            }
+    except Exception:
+        market_data = {
+            "spot_summary": {"up_count": 0, "down_count": 0, "flat_count": 0, "avg_change_pct": 0, "std_change": 0},
+            "pe": {"current": 30, "max": 60, "min": 10, "mean": 35, "percentile": 50},
+            "sector_stats": [],
+            "concentration": {},
+            "index_stats": {},
+            "top_amount": [],
+            "top_losers": [],
+        }
 
     # Step 3: 4 个 Agent 分别分析
     agent_results = {}
@@ -105,10 +123,12 @@ def answer_question(question: str, history: list) -> str:
         )
     except Exception as e:
         final = None
-        error_msg = f"主编汇总失败: {e}"
 
     # Step 5: 格式化输出
-    return _format_answer(question, agent_results, final, rag_context)
+    answer = _format_answer(question, agent_results, final, rag_context)
+    history.append({"role": "user", "content": question})
+    history.append({"role": "assistant", "content": answer})
+    return history, ""
 
 
 def generate_report() -> str:
@@ -176,7 +196,6 @@ def _format_answer(
     if rag_context and rag_context.strip():
         lines.append("\n---\n")
         lines.append("### 📎 参考新闻 (RAG 检索)")
-        # 截取前 3 条
         snippets = rag_context.split("---")[:3]
         lines.append("\n".join(snippets))
 
@@ -221,10 +240,7 @@ def _empty_risk():
 # Gradio UI
 # ================================================================
 def build_ui():
-    with gr.Blocks(
-        title="ASTRA 多智能体 A 股分析",
-        theme=gr.themes.Soft(),
-    ) as demo:
+    with gr.Blocks(title="ASTRA 多智能体 A 股分析") as demo:
         gr.Markdown("""
         # 🏦 ASTRA 多智能体 A 股分析系统
 
@@ -236,7 +252,6 @@ def build_ui():
                 chatbot = gr.Chatbot(
                     label="对话",
                     height=550,
-                    bubble_full_width=False,
                 )
                 msg = gr.Textbox(
                     label="",
@@ -276,23 +291,17 @@ def build_ui():
             fn=answer_question,
             inputs=[msg, chatbot],
             outputs=[chatbot, msg],
-        ).then(
-            fn=lambda: "",
-            outputs=[msg],
         )
 
         msg.submit(
             fn=answer_question,
             inputs=[msg, chatbot],
             outputs=[chatbot, msg],
-        ).then(
-            fn=lambda: "",
-            outputs=[msg],
         )
 
         clear_btn.click(
-            fn=lambda: ([], "", "对话已清空"),
-            outputs=[chatbot, msg, chatbot],
+            fn=lambda: ([], ""),
+            outputs=[chatbot, msg],
         )
 
         report_btn.click(
@@ -309,4 +318,5 @@ if __name__ == "__main__":
         server_name="0.0.0.0",
         server_port=7860,
         share=False,  # 如需公网链接改成 True
+        theme=gr.themes.Soft(),
     )

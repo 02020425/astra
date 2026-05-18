@@ -1,5 +1,6 @@
 """
 PySpark ETL —— 结构化数据清洗 + 多维聚合分析。
+包含 pandas 回退方案，当 Spark 不可用时（如 Windows 无 Hadoop）自动降级。
 
 输入：data/raw/（爬虫产出的 CSV）
 输出：data/processed/（8 份分析结果 CSV）
@@ -9,16 +10,58 @@ Spark Submit：spark-submit spark_jobs/etl.py
 """
 
 from pathlib import Path
-from pyspark.sql import SparkSession
-from pyspark.sql import functions as F
+
+import pandas as pd
+import numpy as np
 
 from config.settings import Settings
 
 
-# ================================================================
-# 初始化
-# ================================================================
 def run_etl(settings: Settings):
+    """先尝试 Spark，失败则用 pandas 回退"""
+    if not _java_ok():
+        print("  Java 版本不满足 PySpark 要求，使用 pandas 回退方案")
+        _run_etl_pandas(settings)
+        return
+    try:
+        _run_etl_spark(settings)
+    except Exception as e:
+        print(f"  Spark 不可用 ({e})，使用 pandas 回退方案")
+        _run_etl_pandas(settings)
+
+
+def _java_ok() -> bool:
+    """检查 Java 版本是否 >= 17（PySpark 3.5 要求）"""
+    import subprocess
+    try:
+        out = subprocess.check_output(
+            ["java", "-version"], stderr=subprocess.STDOUT, text=True, timeout=10
+        )
+        for line in out.splitlines():
+            if "version" in line:
+                # "1.8.0_181" → 8, "17.0.1" → 17
+                ver = line.split('"')[1] if '"' in line else line.split()[-1]
+                major = int(ver.split(".")[0]) if ver.startswith("1.") else (
+                    int(ver.split(".")[0]) if ver[0].isdigit() else int(ver.split(".")[0])
+                )
+                # 处理 "1.8.0" 格式
+                if ver.startswith("1."):
+                    major = int(ver.split(".")[1])
+                else:
+                    major = int(ver.split(".")[0])
+                return major >= 17
+    except Exception:
+        return False
+    return False
+
+
+# ================================================================
+# PySpark 实现
+# ================================================================
+def _run_etl_spark(settings: Settings):
+    from pyspark.sql import SparkSession
+    from pyspark.sql import functions as F
+
     spark = SparkSession.builder \
         .appName("ASTRA_ETL") \
         .master("local[*]") \
@@ -253,6 +296,155 @@ def run_etl(settings: Settings):
 
     print("\nSpark ETL 完成。")
     spark.stop()
+
+
+# ================================================================
+# Pandas 回退方案（Windows / 无 Java 环境自动使用）
+# ================================================================
+def _read_raw_csvs(raw: Path, date_glob: str = "*.csv"):
+    """读取 raw 目录下所有 CSV 并合并"""
+    files = list(raw.glob(date_glob))
+    if not files:
+        return pd.DataFrame()
+    dfs = []
+    for f in files:
+        try:
+            df = pd.read_csv(f)
+            dfs.append(df)
+        except Exception:
+            continue
+    return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
+
+
+def _run_etl_pandas(settings: Settings):
+    raw = settings.data_raw
+    out = settings.data_processed
+    out.mkdir(parents=True, exist_ok=True)
+
+    # ---- 1. 读取 ----
+    print("=" * 40)
+    print("  [Pandas] 读取数据")
+    print("=" * 40)
+
+    spot = _read_raw_csvs(raw / "a_spot")
+    if spot.empty:
+        print("  ERROR 无 a_spot 数据，ETL 中止")
+        return
+    # 统一列名
+    spot.columns = ["code", "name", "price", "change_amt", "change_pct", "bid", "ask",
+                    "prev_close", "open", "high", "low", "volume", "amount", "ts"]
+    spot["price"] = pd.to_numeric(spot["price"], errors="coerce")
+    spot["change_pct"] = pd.to_numeric(spot["change_pct"], errors="coerce")
+    spot["volume"] = pd.to_numeric(spot["volume"], errors="coerce")
+    spot["amount"] = pd.to_numeric(spot["amount"], errors="coerce")
+    spot = spot.dropna(subset=["code", "price"])
+    spot = spot[spot["price"] > 0]
+    print(f"  a_spot: {len(spot)} 条")
+
+    hist = _read_raw_csvs(raw / "a_hist")
+    if not hist.empty:
+        hist.columns = ["date", "open", "close", "high", "low", "volume", "amount"]
+        for c in ["open", "close", "high", "low", "volume", "amount"]:
+            hist[c] = pd.to_numeric(hist[c], errors="coerce")
+        hist["change_pct"] = (hist["close"] - hist["open"]) / hist["open"] * 100
+    print(f"  a_hist: {len(hist)} 条")
+
+    pe = _read_raw_csvs(raw / "market_pe")
+    if not pe.empty:
+        pe.columns = ["date", "index_val", "avg_pe"]
+        pe["avg_pe"] = pd.to_numeric(pe["avg_pe"], errors="coerce")
+        pe["year"] = pe["date"].astype(str).str[:4].astype(int)
+    print(f"  market_pe: {len(pe)} 条")
+
+    ind = _read_raw_csvs(raw / "industry")
+
+    # ---- 2. 聚合分析 ----
+    print("=" * 40)
+    print("  [Pandas] 分析")
+    print("=" * 40)
+
+    total = len(spot)
+    up = int((spot["change_pct"] > 0).sum())
+    down = int((spot["change_pct"] < 0).sum())
+    flat = int((spot["change_pct"] == 0).sum())
+
+    market_summary = pd.DataFrame([{
+        "up_count": up, "down_count": down, "flat_count": flat,
+        "total_count": total,
+        "avg_change_pct": round(float(spot["change_pct"].mean()), 4),
+        "std_change_pct": round(float(spot["change_pct"].std()), 4),
+        "total_amount": round(float(spot["amount"].sum()), 0),
+    }])
+    print(f"  市场摘要: ↑{up} ↓{down} —{flat}")
+
+    top_gainers = spot.nlargest(20, "change_pct")[["code", "name", "change_pct"]]
+    top_losers = spot.nsmallest(20, "change_pct")[["code", "name", "change_pct"]]
+    top_amount = spot.nlargest(20, "amount")[["code", "name", "amount", "change_pct"]]
+    top_amount["amount"] = top_amount["amount"].round(0)
+
+    pe_by_year = pd.DataFrame()
+    if not pe.empty:
+        pe_by_year = pe.groupby("year")["avg_pe"].mean().round(2).reset_index()
+        pe_by_year.columns = ["year", "avg_pe_val"]
+
+    index_stats = pd.DataFrame()
+    if not hist.empty:
+        index_stats = pd.DataFrame([{
+            "close_min": round(float(hist["close"].min()), 2),
+            "close_max": round(float(hist["close"].max()), 2),
+            "close_avg": round(float(hist["close"].mean()), 2),
+            "volatility": round(float(hist["change_pct"].std()), 2),
+        }])
+
+    sector_stats = pd.DataFrame()
+    if not ind.empty and "industry" in ind.columns:
+        merged = spot.merge(ind[["code", "industry"]], on="code", how="left")
+        merged = merged.dropna(subset=["industry"])
+        if len(merged) > 0:
+            sector_stats = merged.groupby("industry").agg(
+                stock_count=("code", "count"),
+                avg_change=("change_pct", "mean"),
+                total_amount=("amount", "sum"),
+            ).reset_index()
+            sector_stats.columns = ["industry_name", "stock_count", "avg_change", "total_amount"]
+            sector_stats["avg_change"] = sector_stats["avg_change"].round(2)
+            sector_stats["total_amount"] = sector_stats["total_amount"].round(0)
+            sector_stats = sector_stats.sort_values("avg_change", ascending=False)
+    print(f"  板块聚合: {len(sector_stats)} 个行业")
+
+    total_amt = float(spot["amount"].sum())
+    top10_ratio = round(float(spot.nlargest(10, "amount")["amount"].sum()) / total_amt * 100, 2) if total_amt > 0 else 0
+    top50_ratio = round(float(spot.nlargest(50, "amount")["amount"].sum()) / total_amt * 100, 2) if total_amt > 0 else 0
+    concentration = pd.DataFrame([{"top10_pct": top10_ratio, "top50_pct": top50_ratio}])
+    print(f"  集中度: TOP10={top10_ratio}%  TOP50={top50_ratio}%")
+
+    spot_out = spot[["code", "name", "price", "change_pct", "volume", "amount"]].copy()
+    spot_out.columns = ["code", "name", "price", "change_pct", "volume_num", "amount_num"]
+
+    # ---- 3. 写出 ----
+    print("=" * 40)
+    print("  [Pandas] 写出结果")
+    print("=" * 40)
+
+    outputs = [
+        ("market_summary", market_summary),
+        ("top_gainers", top_gainers),
+        ("top_losers", top_losers),
+        ("top_amount", top_amount),
+        ("pe_by_year", pe_by_year),
+        ("index_stats", index_stats),
+        ("sector_stats", sector_stats),
+        ("concentration", concentration),
+        ("spot_clean", spot_out),
+    ]
+
+    for name, df in outputs:
+        path = out / name
+        path.mkdir(parents=True, exist_ok=True)
+        df.to_csv(path / "part-00000.csv", index=False)
+        print(f"  [{name}] → {path}")
+
+    print("\nPandas ETL 完成。")
 
 
 # ================================================================

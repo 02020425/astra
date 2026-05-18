@@ -3,7 +3,7 @@
 
 三个来源：
   - stock_news_em: 东财个股新闻（成交量 TOP 20 的股票）
-  - js_news: 金十数据快讯（宏观/产业）
+  - stock_news_main_cx: 财新宏观新闻（宏观/产业）
   - news_cctv: CCTV 财经新闻
 
 输出格式：
@@ -46,13 +46,13 @@ class NewsCrawler:
             all_articles.extend(articles)
             print(f"  个股新闻: {len(articles)} 条")
 
-        # 2. 金十快讯
+        # 2. 财新宏观新闻
         try:
-            articles = self._fetch_js_news()
+            articles = self._fetch_cx_news()
             all_articles.extend(articles)
-            print(f"  金十快讯: {len(articles)} 条")
+            print(f"  财新宏观: {len(articles)} 条")
         except Exception as e:
-            print(f"  金十快讯失败: {e}")
+            print(f"  财新宏观失败: {e}")
 
         # 3. CCTV 财经
         try:
@@ -93,21 +93,23 @@ class NewsCrawler:
         return articles
 
     # ================================================================
-    # 数据源 2: 金十快讯
+    # 数据源 2: 财新宏观新闻
     # ================================================================
-    def _fetch_js_news(self) -> list[dict]:
-        df = retry(lambda: ak.js_news(), "js_news")
+    def _fetch_cx_news(self) -> list[dict]:
+        df = retry(lambda: ak.stock_news_main_cx(), "cx_news")
         if df is None or df.empty:
             return []
         articles = []
-        for _, row in df.head(30).iterrows():  # 限制数量
+        for _, row in df.head(50).iterrows():
+            tag = str(row.get("tag", ""))
+            summary = str(row.get("summary", ""))
             articles.append({
-                "title": str(row.get("title", row.get("content", "")))[:100],
-                "content": str(row.get("content", "")),
-                "publish_time": str(row.get("time", "")),
-                "source": "js_news",
+                "title": summary[:100] if summary else tag,
+                "content": summary,
+                "publish_time": self.today,
+                "source": "stock_news_main_cx",
                 "stock_code": None,
-                "url": str(row.get("url", f"js_{self.today}_{len(articles)}")),
+                "url": str(row.get("url", f"cx_{self.today}_{len(articles)}")),
                 "crawl_date": self.today,
             })
         return articles
