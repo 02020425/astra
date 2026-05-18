@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+
+# Environment
+.env
+
+# Data (runtime)
+data/raw/
+data/processed/
+data/reports/
+data/chroma/
+data/eval_cards/
+
+# IDE
+.idea/
+.vscode/
+
+# Spark
+metastore_db/
+spark-warehouse/
+derby.log
+
+# Docker
+.cache/
