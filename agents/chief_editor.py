@@ -31,8 +31,11 @@ class ChiefEditor:
         technical: TechnicalAnalysis,
         fund_flow: FundFlowAnalysis,
         risk: RiskAnalysis,
+        question: str | None = None,
     ) -> FinalReport:
-        """综合 4 份报告，产出最终日报"""
+        """综合 4 份报告，回答用户问题。无 question 则生成日报。"""
+
+        task_line = f"## 用户问题\n{question}\n\n请围绕以上问题，综合以下信息给出回答（JSON 格式）。" if question else "请综合以上所有信息，输出最终日报 JSON。"
 
         # 把 Pydantic 对象序列化为 JSON 字符串，嵌入 prompt
         user_prompt = f"""## 报告日期
@@ -64,7 +67,7 @@ class ChiefEditor:
 {risk.model_dump_json(indent=2, ensure_ascii=False)}
 ```
 
-请综合以上所有信息，输出最终日报 JSON。"""
+{task_line}"""
 
         raw = self.llm.chat(
             model=self.model,

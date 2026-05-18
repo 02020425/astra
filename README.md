@@ -64,30 +64,44 @@ akshare 爬虫 ──→ PySpark ETL ──→ RAG 检索 ──→ 4 Agent 并�
 # 1. 克隆并进入项目
 cd astra
 
-# 2. 设置 API Key
+# 2. 安装 uv（不需要 Python，独立二进制文件）
+# Windows: powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+# macOS/Linux: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# 3. 安装 Python >= 3.12（如果本地没有）
+uv python install 3.12
+
+# 4. 安装依赖（自动创建 venv）
+uv sync
+
+# 5. 设置 API Key（二选一）
+# 方式 A：环境变量（推荐，全局生效）
+setx DASHSCOPE_API_KEY "你的Key"
+# 方式 B：项目 .env 文件
 cp .env.example .env
 # 编辑 .env，填入你的 DASHSCOPE_API_KEY
 
-# 3. 安装依赖
-pip install -e .
-
-# 4. (仅 Spark 需要) 确保 Java 17+ 已安装
+# 6. (仅 Spark 需要) 确保 Java 17+ 已安装
 java -version
 ```
 
 ### 使用
 
 ```bash
-# CLI 模式 — 生成今日日报
-python main.py
+# ---- CLI 模式：生成今日日报（6 阶段全流程）----
+python main.py                # 分析今日
+python main.py --date 20260518   # 分析指定日期
+python main.py --crawl-only      # 只爬数据，不分析
 
-# CLI 模式 — 指定日期
-python main.py --date 20260518
-
-# Gradio 交互问答（演示用）
+# ---- Gradio 交互模式：浏览器问答 ----
 python app.py
-# 浏览器打开 http://localhost:7860
+# 打开 http://localhost:7860
+# 两种模式：
+#   ① 对话框提问 — 4 个 AI 分析师 + 主编回答
+#   ② 一键生成日报 — 等同于 python main.py
 ```
+
+> 首次运行会自动修复 akshare 1.18.x 在 Python 3.12+ 下的兼容性问题，无需手动操作。
 
 ### Docker
 

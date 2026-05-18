@@ -13,6 +13,9 @@ from pathlib import Path
 
 import pandas as pd
 
+from utils.helpers import patch_akshare
+patch_akshare()
+
 from config.settings import Settings
 from llm.client import LLMClient
 from crawler.market_crawler import MarketCrawler

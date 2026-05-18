@@ -7,6 +7,29 @@ from pathlib import Path
 from datetime import datetime
 
 
+def patch_akshare():
+    """修复 akshare 在 Python 3.12+ 下 stock_news_em 的正则 bug。
+    启动时调用一次即可，修复后写入缓存文件避免重复修改。"""
+    marker = Path(__file__).parent.parent / ".akshare_patched"
+    if marker.exists():
+        return
+    try:
+        import akshare
+        target = Path(akshare.__file__).parent / "news" / "news_stock.py"
+        content = target.read_text(encoding="utf-8")
+        if r'r"　"' in content:
+            target.write_text(
+                content.replace(r'r"　"', r'"　"'),
+                encoding="utf-8",
+            )
+        marker.touch()
+    except Exception:
+        pass  # 补丁失败不影响主流程
+
+from pathlib import Path
+from datetime import datetime
+
+
 def retry(func, name: str, max_tries: int = 3):
     """
     带指数退避的重试机制。

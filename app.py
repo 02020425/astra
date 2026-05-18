@@ -15,6 +15,9 @@ from datetime import datetime
 
 import gradio as gr
 
+from utils.helpers import patch_akshare
+patch_akshare()
+
 from config.settings import Settings
 from llm.client import LLMClient
 from rag.embedder import DashScopeEmbedder
@@ -56,11 +59,45 @@ AGENT_DISPLAY = {
 
 
 # ================================================================
+# 问题分类（轻量模型，避免浪费 token）
+# ================================================================
+CLS_SYSTEM = """判断用户问题属于哪一类，只输出一个词。
+
+类别：
+- stock: 关于A股/大盘/板块/个股/行情/投资策略的问题
+- no_data: 问的是金融相关但系统没有数据（如基金、期货、港股、美股、债券、加密货币）
+- off_topic: 完全不相关（如天气、闲聊、编程、娱乐）
+
+只输出: stock / no_data / off_topic"""
+
+
+def classify_question(question: str) -> str:
+    """用轻量模型判断问题类型"""
+    try:
+        raw = llm.chat(
+            model=settings.lightweight_model,
+            system=CLS_SYSTEM,
+            user=question,
+            temperature=0,
+            max_tokens=10,
+        )
+        raw = raw.strip().lower()
+        if "stock" in raw:
+            return "stock"
+        elif "no_data" in raw:
+            return "no_data"
+        return "off_topic"
+    except Exception:
+        return "stock"  # 分类失败时放行，宁可多跑不少拦
+
+
+# ================================================================
 # 核心问答逻辑
 # ================================================================
 def answer_question(question: str, history: list) -> tuple:
     """
     处理用户提问：
+    0. 分类问题，拒绝回答不相关问题
     1. RAG 检索相关新闻
     2. 4 个 Agent 各自分析（串行，避免 Gradio 异步问题）
     3. 主编综合
@@ -70,6 +107,17 @@ def answer_question(question: str, history: list) -> tuple:
     if not question or not question.strip():
         history.append({"role": "user", "content": question or ""})
         history.append({"role": "assistant", "content": "请输入你的问题。"})
+        return history, ""
+
+    # Step 0: 分类
+    category = classify_question(question)
+    if category == "off_topic":
+        history.append({"role": "user", "content": question})
+        history.append({"role": "assistant", "content": "抱歉，我是 A 股市场分析助手，回答不了这个问题。试试问我大盘走势、板块轮动、市场风险之类的吧。"})
+        return history, ""
+    if category == "no_data":
+        history.append({"role": "user", "content": question})
+        history.append({"role": "assistant", "content": "抱歉，目前数据只覆盖 A 股市场，基金、港股、美股、期货等暂不支持，无法给你有依据的回答。"})
         return history, ""
 
     # Step 1: RAG 检索
@@ -120,6 +168,7 @@ def answer_question(question: str, history: list) -> tuple:
             technical=agent_results.get("technical") or _empty_technical(),
             fund_flow=agent_results.get("fund_flow") or _empty_fund_flow(),
             risk=agent_results.get("risk") or _empty_risk(),
+            question=question,
         )
     except Exception as e:
         final = None
